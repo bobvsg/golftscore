@@ -1,0 +1,838 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>⛳ Golf Scorecard</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:'Segoe UI',system-ui,sans-serif;background:#f8fafc;min-height:100vh}
+  input,select,button{font-family:inherit}
+  ::-webkit-scrollbar{height:4px;width:4px}
+  ::-webkit-scrollbar-track{background:#f1f5f9}
+  ::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:99px}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect } = React;
+
+// ── STORAGE (localStorage) ────────────────────────────────────────────────────
+const DB = {
+  set(key, val) { try{ localStorage.setItem(key, JSON.stringify(val)); }catch(e){} },
+  get(key)      { try{ const v=localStorage.getItem(key); return v?JSON.parse(v):null; }catch(e){return null;} },
+  del(key)      { try{ localStorage.removeItem(key); }catch(e){} },
+  keys(prefix)  { try{ return Object.keys(localStorage).filter(k=>k.startsWith(prefix)); }catch(e){return[];} },
+};
+
+// ── CONSTANTS ─────────────────────────────────────────────────────────────────
+const TEES = [
+  { id:"black", label:"Black", emoji:"⬛", color:"#111827", bg:"#f3f4f6", desc:"Championship / Pro" },
+  { id:"blue",  label:"Blue",  emoji:"🟦", color:"#1d4ed8", bg:"#dbeafe", desc:"Men (scratch/low HCP)" },
+  { id:"white", label:"White", emoji:"⬜", color:"#374151", bg:"#f9fafb", desc:"Men (regular)" },
+  { id:"red",   label:"Red",   emoji:"🟥", color:"#dc2626", bg:"#fee2e2", desc:"Women / Senior" },
+];
+const TEE_FACTOR = { black:1.0, blue:0.93, white:0.86, red:0.77 };
+
+const DEFAULT_PLAYERS = [
+  { id:"chavis", name:"Chavis", team:"Chavis", hcp:18, tee:"white" },
+  { id:"lisa",   name:"Lisa",   team:"Chavis", hcp:24, tee:"red"   },
+  { id:"joy",    name:"Joy",    team:"Chavis", hcp:20, tee:"red"   },
+  { id:"ken",    name:"Ken",    team:"Ken",    hcp:16, tee:"blue"  },
+  { id:"bob",    name:"Bob",    team:"Ken",    hcp:18, tee:"white" },
+  { id:"leo",    name:"Leo",    team:"Ken",    hcp:22, tee:"white" },
+  { id:"tony",   name:"Tony",   team:"Tony",   hcp:14, tee:"blue"  },
+  { id:"rose",   name:"Rose",   team:"Tony",   hcp:20, tee:"red"   },
+  { id:"jane",   name:"Jane",   team:"Tony",   hcp:24, tee:"red"   },
+];
+const TEAMS       = ["Chavis","Ken","Tony"];
+const TEAM_COLORS = { Chavis:"#f59e0b", Ken:"#3b82f6", Tony:"#10b981" };
+const TEAM_BG     = { Chavis:"#fef3c7", Ken:"#dbeafe",  Tony:"#d1fae5" };
+const CLUBS_P1    = ["Driver","3W","5W","3I","4I","5I","6I","7I","8I","9I","PW","AW","SW","LW","Penalty"];
+const CLUBS_P2    = ["SW","LW","PW","AW","9I","Putter","Penalty"];
+const MAX_STROKES = { 3:5, 4:6, 5:7 }; // max gậy giai đoạn 1 (máy ảo)
+
+// ── UTILS ─────────────────────────────────────────────────────────────────────
+const uid   = () => Date.now().toString(36)+Math.random().toString(36).slice(2,6);
+const today = () => { const d=new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`; };
+const calcHcpStrokes = (hcp,n) => Math.round((hcp/18)*n*10)/10;
+const getTee  = id => TEES.find(t=>t.id===id)||TEES[2];
+const holeYardsForTee = (hole, teeId) => {
+  if (!hole) return 0;
+  const v=parseInt(hole.yards?.[teeId]); if(v>0) return v;
+  const b=parseInt(hole.yards?.black); if(b>0) return Math.round(b*TEE_FACTOR[teeId]);
+  const w=parseInt(hole.yards?.white); if(w>0) return Math.round(w/TEE_FACTOR.white*TEE_FACTOR[teeId]);
+  return 0;
+};
+
+// ── STORAGE HELPERS ───────────────────────────────────────────────────────────
+const savePlayers = pl => DB.set("golf_players", pl);
+const loadPlayers = () => {
+  const p = DB.get("golf_players");
+  return p ? p.map(x=>({tee:"white",...x})) : DEFAULT_PLAYERS;
+};
+const saveSession = s => DB.set(`golf_session_${s.id}`, s);
+const loadAllSessions = () => {
+  return DB.keys("golf_session_").map(k=>DB.get(k)).filter(Boolean)
+    .sort((a,b)=>new Date(b.date)-new Date(a.date));
+};
+const deleteSession = id => DB.del(`golf_session_${id}`);
+
+// ── SHARED COMPONENTS ─────────────────────────────────────────────────────────
+const TeeBadge = ({teeId,size="sm"}) => {
+  const t=getTee(teeId); const fs=size==="lg"?14:12;
+  return <span style={{background:t.bg,color:t.color,border:`1.5px solid ${t.color}`,borderRadius:99,
+    padding:size==="lg"?"4px 12px":"2px 8px",fontSize:fs,fontWeight:700,display:"inline-flex",alignItems:"center",gap:4}}>
+    {t.emoji} {t.label}
+  </span>;
+};
+const Badge = ({color,children}) => <span style={{
+  background:TEAM_BG[color]||"#f3f4f6",color:TEAM_COLORS[color]||"#374151",
+  border:`1.5px solid ${TEAM_COLORS[color]||"#d1d5db"}`,
+  borderRadius:99,padding:"2px 10px",fontSize:12,fontWeight:700}}>{children}</span>;
+
+const TeamCard = ({team,rank,netTotal,grossTotal,members}) => (
+  <div style={{background:TEAM_BG[team],border:`2px solid ${TEAM_COLORS[team]}`,borderRadius:16,padding:"18px 22px",flex:1,minWidth:170}}>
+    <div style={{fontSize:20,fontWeight:800,color:TEAM_COLORS[team]}}>{["🥇","🥈","🥉"][rank]||""} Team {team}</div>
+    <div style={{fontSize:13,color:"#6b7280",marginTop:2}}>{members.join(" · ")}</div>
+    <div style={{marginTop:10,display:"flex",gap:18}}>
+      <div><div style={{fontSize:11,color:"#9ca3af",fontWeight:600}}>NET TOTAL</div>
+        <div style={{fontSize:28,fontWeight:900,color:TEAM_COLORS[team]}}>{netTotal.toFixed(1)}</div></div>
+      <div><div style={{fontSize:11,color:"#9ca3af",fontWeight:600}}>GROSS</div>
+        <div style={{fontSize:28,fontWeight:900,color:"#374151"}}>{grossTotal}</div></div>
+    </div>
+  </div>
+);
+
+const th  = {padding:"7px 10px",textAlign:"center",fontWeight:700,fontSize:12,color:"#374151",borderBottom:"1px solid #e5e7eb"};
+const th2 = {padding:"9px 10px",textAlign:"center",fontWeight:700,fontSize:12,color:"#fff"};
+const td  = {padding:"7px 10px",textAlign:"center",borderBottom:"1px solid #f3f4f6",fontSize:13};
+
+// ═════════════════════════════════════════════════════════════════════════════
+// MAIN APP
+// ═════════════════════════════════════════════════════════════════════════════
+function App() {
+  const [tab,           setTab]          = useState("session");
+  const [players,       setPlayersState] = useState([]);
+  const [sessions,      setSessions]     = useState([]);
+  const [sessionDate,   setSessionDate]  = useState(today());
+  const [activePlayers, setActivePlayers]= useState([]);
+  const [holes,         setHoles]        = useState([]);
+  const [phase,         setPhase]        = useState("setup");
+  const [currentHole,   setCurrentHole]  = useState(0);
+  const [currentPlayer, setCurrentPlayer]= useState(0);
+  const [shotClub,      setShotClub]     = useState("");
+  const [shotYards,     setShotYards]    = useState("");
+  const [showHistory,   setShowHistory]  = useState(null);
+
+  useEffect(()=>{
+    const pl = loadPlayers();
+    setPlayersState(pl);
+    setActivePlayers(pl.map(p=>({...p,active:true})));
+    setSessions(loadAllSessions());
+  },[]);
+
+  const setPlayers = pl => { setPlayersState(pl); savePlayers(pl); };
+  const activePl   = activePlayers.filter(p=>p.active);
+  const curHole    = holes[currentHole];
+  const curPlayer  = activePl[currentPlayer];
+
+  // ── SETUP ──────────────────────────────────────────────────────────────────
+  const addHole = par => setHoles(prev=>[...prev,{id:uid(),par,
+    yards:{black:"",blue:"",white:"",red:""},
+    strokes:Object.fromEntries(activePlayers.filter(p=>p.active).map(p=>[p.id,{
+      p1shots:[],   // giai đoạn 1: máy ảo
+      p2shots:[],   // giai đoạn 2: chip/putt sân cỏ
+      phase:1,      // 1 = đang giai đoạn 1, 2 = đang giai đoạn 2, 3 = xong
+      enteredP2At50:false, // true nếu vào P2 do ≤50y (không phải do hết gậy)
+    }]))}]);
+  const removeHole = idx => setHoles(prev=>prev.filter((_,i)=>i!==idx));
+
+  const autoFillYards = (hIdx, teeId, val) => {
+    const num=parseInt(val)||0;
+    setHoles(prev=>prev.map((h,i)=>{
+      if(i!==hIdx) return h;
+      const newY={...h.yards}; newY[teeId]=val;
+      if(num>0){
+        const f=TEE_FACTOR[teeId];
+        if(!parseInt(newY.black)) newY.black=String(Math.round(num/f*TEE_FACTOR.black));
+        if(!parseInt(newY.blue))  newY.blue =String(Math.round(num/f*TEE_FACTOR.blue));
+        if(!parseInt(newY.white)) newY.white=String(Math.round(num/f*TEE_FACTOR.white));
+        if(!parseInt(newY.red))   newY.red  =String(Math.round(num/f*TEE_FACTOR.red));
+        newY[teeId]=val;
+      }
+      return {...h,yards:newY};
+    }));
+  };
+
+  const startSession = () => {
+    if(activePl.length<2) return alert("Cần ít nhất 2 người!");
+    if(holes.length===0)  return alert("Cần thêm ít nhất 1 hố!");
+    setPhase("playing"); setCurrentHole(0); setCurrentPlayer(0); setShotClub(""); setShotYards("");
+  };
+
+  // ── PLAYING ────────────────────────────────────────────────────────────────
+  // Yards còn lại giai đoạn 1
+  const remYardsP1 = (ps, totalY) => {
+    if(!totalY) return null;
+    return Math.max(0, totalY - ps.p1shots.reduce((s,sh)=>s+(sh.yardsMeasured||0),0));
+  };
+
+  // Ghi gậy giai đoạn 1
+  const recordShotP1 = () => {
+    if(!shotClub) return alert("Chọn gậy!");
+    const measured = parseInt(shotYards)||0;
+    const ps = curHole.strokes[curPlayer.id];
+    const max = MAX_STROKES[curHole.par];
+    const newShots = [...ps.p1shots, {club:shotClub, yardsMeasured:measured}];
+    const totalY = holeYardsForTee(curHole, curPlayer.tee||"white");
+    const usedY = newShots.reduce((s,sh)=>s+(sh.yardsMeasured||0),0);
+    const remaining = totalY ? Math.max(0, totalY - usedY) : null;
+    // Điều kiện chuyển sang giai đoạn 2:
+    // (a) còn lại ≤ 50 yard, hoặc (b) đã đánh đủ số gậy tối đa
+    const hitYardLimit  = remaining !== null && remaining <= 50;
+    const hitStrokeLimit= newShots.length >= max;
+    const moveToP2 = hitYardLimit || hitStrokeLimit;
+    const newPs = { ...ps, p1shots: newShots, phase: moveToP2 ? 2 : 1, enteredP2At50: hitYardLimit };
+    setHoles(prev=>{ const n=[...prev]; n[currentHole]={...n[currentHole],strokes:{...n[currentHole].strokes,[curPlayer.id]:newPs}}; return n; });
+    setShotClub(""); setShotYards("");
+  };
+
+  // Ghi gậy giai đoạn 2 (chip/putt, không giới hạn)
+  const recordShotP2 = () => {
+    if(!shotClub) return alert("Chọn gậy!");
+    const ps = curHole.strokes[curPlayer.id];
+    const newShots = [...ps.p2shots, {club:shotClub}];
+    const newPs = { ...ps, p2shots: newShots };
+    setHoles(prev=>{ const n=[...prev]; n[currentHole]={...n[currentHole],strokes:{...n[currentHole].strokes,[curPlayer.id]:newPs}}; return n; });
+    setShotClub(""); setShotYards("");
+  };
+
+  // Hoàn tác gậy cuối (cả 2 giai đoạn)
+  const undoShot = () => {
+    const ps = curHole.strokes[curPlayer.id];
+    if(ps.phase===2 && ps.p2shots.length>0){
+      // Hoàn tác gậy P2 cuối
+      const newPs = {...ps, p2shots: ps.p2shots.slice(0,-1)};
+      setHoles(prev=>{ const n=[...prev]; n[currentHole]={...n[currentHole],strokes:{...n[currentHole].strokes,[curPlayer.id]:newPs}}; return n; });
+    } else if(ps.phase===2 && ps.p2shots.length===0){
+      // Quay lại P1 (hủy chuyển giai đoạn)
+      const newPs = {...ps, phase:1, enteredP2At50:false};
+      setHoles(prev=>{ const n=[...prev]; n[currentHole]={...n[currentHole],strokes:{...n[currentHole].strokes,[curPlayer.id]:newPs}}; return n; });
+    } else if(ps.p1shots.length>0){
+      const newShots = ps.p1shots.slice(0,-1);
+      const newPs = {...ps, p1shots:newShots};
+      setHoles(prev=>{ const n=[...prev]; n[currentHole]={...n[currentHole],strokes:{...n[currentHole].strokes,[curPlayer.id]:newPs}}; return n; });
+    }
+    setShotClub(""); setShotYards("");
+  };
+
+  // Kết thúc giai đoạn 2 thủ công (bấm nút "Vào lỗ")
+  const finishP2 = () => {
+    const ps = curHole.strokes[curPlayer.id];
+    const newPs = {...ps, phase:3};
+    setHoles(prev=>{ const n=[...prev]; n[currentHole]={...n[currentHole],strokes:{...n[currentHole].strokes,[curPlayer.id]:newPs}}; return n; });
+    setShotClub(""); setShotYards("");
+  };
+
+  // Tổng gậy của 1 người 1 hố (P1 + P2)
+  const totalStrokes = ps => {
+    const max = curHole ? MAX_STROKES[curHole.par] : 0;
+    const p1 = Math.min(ps.p1shots.length, max) || ps.p1shots.length;
+    return p1 + (ps.p2shots?.length||0);
+  };
+
+  const nextPlayer = () => {
+    const ps = curHole.strokes[curPlayer.id];
+    if(ps.p1shots.length===0 && !window.confirm("Chưa ghi nhận gậy nào. Tiếp tục?")) return;
+    if(ps.phase===1 && !window.confirm("Người này chưa đến giai đoạn 2 (chip/putt). Bỏ qua?")) return;
+    if(currentPlayer<activePl.length-1) setCurrentPlayer(p=>p+1);
+    else if(currentHole<holes.length-1){ setCurrentHole(h=>h+1); setCurrentPlayer(0); }
+    else finishSession();
+    setShotClub(""); setShotYards("");
+  };
+  const prevPlayer = () => {
+    if(currentPlayer>0) setCurrentPlayer(p=>p-1);
+    else if(currentHole>0){ setCurrentHole(h=>h-1); setCurrentPlayer(activePl.length-1); }
+    setShotClub(""); setShotYards("");
+  };
+
+  const finishSession = () => {
+    const sess={id:uid(),date:sessionDate,players:activePl,holes};
+    saveSession(sess);
+    setSessions(prev=>[sess,...prev]);
+    setPhase("done");
+  };
+
+  // ── SCORING ────────────────────────────────────────────────────────────────
+  const calcHoleStrokes = (ps, par) => {
+    const max = MAX_STROKES[par];
+    const p1 = Math.min(ps.p1shots?.length||0, max);
+    const p2 = ps.p2shots?.length||0;
+    return p1 + p2;
+  };
+
+  const calcSessionScores = sess => {
+    const numH=sess.holes.length;
+    const playerScores=sess.players.map(p=>{
+      let gross=0;
+      sess.holes.forEach(h=>{
+        const s=h.strokes[p.id];
+        if(s) gross += calcHoleStrokes(s, h.par);
+      });
+      const hcpStrokes=calcHcpStrokes(p.hcp,numH);
+      return{...p,gross,net:gross-hcpStrokes,hcpStrokes};
+    });
+    const teamScores=TEAMS.map(team=>{
+      const members=playerScores.filter(p=>p.team===team);
+      return{team,members:members.map(p=>p.name),grossTotal:members.reduce((s,p)=>s+p.gross,0),netTotal:members.reduce((s,p)=>s+p.net,0)};
+    }).sort((a,b)=>a.netTotal-b.netTotal);
+    return{playerScores,teamScores};
+  };
+  const calcLeaderboard = () => {
+    const totals={};
+    sessions.forEach(sess=>{ const{playerScores}=calcSessionScores(sess);
+      playerScores.forEach(p=>{
+        if(!totals[p.id])totals[p.id]={...p,totalNet:0,totalGross:0,sessions:0};
+        totals[p.id].totalNet+=p.net; totals[p.id].totalGross+=p.gross; totals[p.id].sessions+=1;
+      });
+    });
+    return Object.values(totals).sort((a,b)=>a.totalNet-b.totalNet);
+  };
+
+  // ── RENDERS ────────────────────────────────────────────────────────────────
+  const renderSetup = () => (
+    <div style={{maxWidth:740,margin:"0 auto"}}>
+      <h2 style={{fontSize:22,fontWeight:800,color:"#1f2937",marginBottom:18}}>⚙️ Thiết lập buổi chơi</h2>
+      <div style={{background:"#fff",borderRadius:14,padding:20,marginBottom:16,border:"1.5px solid #e5e7eb"}}>
+        <label style={{fontWeight:700,color:"#374151"}}>📅 Ngày tập: </label>
+        <input type="date" value={sessionDate} onChange={e=>setSessionDate(e.target.value)}
+          style={{marginLeft:8,padding:"6px 12px",borderRadius:8,border:"1.5px solid #d1d5db",fontSize:15}}/>
+      </div>
+      <div style={{background:"#fff",borderRadius:14,padding:20,marginBottom:16,border:"1.5px solid #e5e7eb"}}>
+        <div style={{fontWeight:700,color:"#374151",marginBottom:12}}>👥 Thành viên tham gia:</div>
+        <div style={{display:"flex",flexWrap:"wrap",gap:10}}>
+          {activePlayers.map((p,i)=>(
+            <div key={p.id} onClick={()=>setActivePlayers(prev=>prev.map((x,j)=>j===i?{...x,active:!x.active}:x))}
+              style={{display:"flex",alignItems:"center",gap:8,background:p.active?TEAM_BG[p.team]:"#f9fafb",
+                border:`2px solid ${p.active?TEAM_COLORS[p.team]:"#e5e7eb"}`,borderRadius:10,
+                padding:"8px 14px",cursor:"pointer",opacity:p.active?1:0.5}}>
+              <span style={{fontWeight:700,fontSize:14}}>{p.name}</span>
+              <Badge color={p.team}>{p.team}</Badge>
+              <TeeBadge teeId={p.tee||"white"}/>
+              <span style={{fontSize:12,color:"#6b7280"}}>HCP {p.hcp}</span>
+            </div>
+          ))}
+        </div>
+        <div style={{marginTop:10,fontSize:12,color:"#9ca3af"}}>Click để bật/tắt. Tee cài trong ⚙️ Cài đặt.</div>
+      </div>
+      <div style={{background:"#fff",borderRadius:14,padding:20,marginBottom:16,border:"1.5px solid #e5e7eb"}}>
+        <div style={{fontWeight:700,color:"#374151",marginBottom:12}}>⛳ Thêm hố đánh:</div>
+        <div style={{display:"flex",gap:8,marginBottom:16}}>
+          {[3,4,5].map(par=>(
+            <button key={par} onClick={()=>addHole(par)} style={{background:"#1f2937",color:"#fff",border:"none",
+              borderRadius:10,padding:"10px 22px",fontWeight:700,fontSize:15,cursor:"pointer"}}>+ Par {par}</button>
+          ))}
+        </div>
+        {holes.length===0&&<div style={{color:"#9ca3af",fontSize:14}}>Chưa có hố nào.</div>}
+        {holes.map((h,i)=>(
+          <div key={h.id} style={{background:"#f9fafb",borderRadius:12,padding:"14px 16px",marginBottom:12,border:"1.5px solid #e5e7eb"}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
+              <div style={{fontWeight:800,fontSize:15}}>Hố {i+1} · Par {h.par}</div>
+              <button onClick={()=>removeHole(i)} style={{background:"#ef4444",color:"#fff",border:"none",borderRadius:8,padding:"4px 12px",cursor:"pointer",fontSize:13,fontWeight:700}}>✕ Xóa</button>
+            </div>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:8}}>
+              {TEES.map(tee=>(
+                <div key={tee.id} style={{background:tee.bg,border:`1.5px solid ${tee.color}`,borderRadius:8,padding:"8px 10px"}}>
+                  <div style={{display:"flex",alignItems:"center",gap:4,marginBottom:4}}>
+                    <span style={{fontSize:14}}>{tee.emoji}</span>
+                    <span style={{fontWeight:700,fontSize:13,color:tee.color}}>{tee.label}</span>
+                  </div>
+                  <div style={{fontSize:10,color:"#9ca3af",marginBottom:5}}>{tee.desc}</div>
+                  <input type="number" value={h.yards[tee.id]} min={0} max={700}
+                    onChange={e=>setHoles(prev=>prev.map((hh,ii)=>ii===i?{...hh,yards:{...hh.yards,[tee.id]:e.target.value}}:hh))}
+                    onBlur={e=>autoFillYards(i,tee.id,e.target.value)}
+                    placeholder="yard"
+                    style={{width:"100%",padding:"6px 8px",borderRadius:6,border:`1.5px solid ${tee.color}`,
+                      fontSize:14,textAlign:"center",background:"#fff",boxSizing:"border-box"}}/>
+                </div>
+              ))}
+            </div>
+            <div style={{marginTop:6,fontSize:11,color:"#9ca3af"}}>💡 Nhập 1 tee → các tee khác tự gợi ý</div>
+          </div>
+        ))}
+      </div>
+      <button onClick={startSession} style={{background:"linear-gradient(135deg,#16a34a,#15803d)",color:"#fff",border:"none",
+        borderRadius:12,padding:"14px 40px",fontSize:17,fontWeight:800,cursor:"pointer",
+        boxShadow:"0 4px 14px rgba(22,163,74,0.4)"}}>🏌️ Bắt đầu đánh!</button>
+    </div>
+  );
+
+  const renderPlaying = () => {
+    if(!curHole||!curPlayer) return null;
+    const ps      = curHole.strokes[curPlayer.id];
+    const max     = MAX_STROKES[curHole.par];
+    const totalY  = holeYardsForTee(curHole, curPlayer.tee||"white");
+    const rem     = remYardsP1(ps, totalY);
+    const phase   = ps.phase;
+    const p1Used  = ps.p1shots.length;
+    const p2Used  = ps.p2shots.length;
+    const progressP1 = Math.min((p1Used/max)*100, 100);
+
+    const yardsAfterShotP1 = idx => {
+      if(!totalY) return null;
+      let g=0; for(let k=0;k<=idx;k++) g+=(ps.p1shots[k].yardsMeasured||0);
+      return Math.max(0, totalY-g);
+    };
+
+    return (
+      <div style={{maxWidth:580,margin:"0 auto"}}>
+
+        {/* HEADER */}
+        <div style={{background:"linear-gradient(135deg,#1f2937,#374151)",borderRadius:16,padding:"18px 24px",marginBottom:16,color:"#fff"}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:10}}>
+            <div>
+              <div style={{fontSize:12,color:"#9ca3af"}}>HỐ {currentHole+1} / {holes.length}</div>
+              <div style={{fontSize:24,fontWeight:900}}>Par {curHole.par}</div>
+            </div>
+            <div style={{textAlign:"right"}}>
+              <div style={{fontSize:12,color:"#9ca3af"}}>NGƯỜI {currentPlayer+1}/{activePl.length}</div>
+              <div style={{fontSize:20,fontWeight:800,color:TEAM_COLORS[curPlayer.team]||"#fff"}}>{curPlayer.name}</div>
+              <div style={{display:"flex",gap:6,justifyContent:"flex-end",marginTop:4}}>
+                <Badge color={curPlayer.team}>{curPlayer.team}</Badge>
+                <TeeBadge teeId={curPlayer.tee||"white"}/>
+              </div>
+            </div>
+          </div>
+
+          {/* Phase indicator */}
+          <div style={{display:"flex",gap:8,marginBottom:10}}>
+            <div style={{flex:1,textAlign:"center",padding:"8px 6px",borderRadius:10,
+              background:phase===1?"rgba(16,185,129,0.3)":"rgba(255,255,255,0.07)",
+              border:phase===1?"1.5px solid #10b981":"1px solid rgba(255,255,255,0.1)"}}>
+              <div style={{fontSize:11,color:phase===1?"#6ee7b7":"#9ca3af",fontWeight:700}}>📡 GIAI ĐOẠN 1</div>
+              <div style={{fontSize:12,color:"#fff",marginTop:2}}>Máy ảo · {p1Used}/{max} gậy</div>
+            </div>
+            <div style={{display:"flex",alignItems:"center",color:"#9ca3af",fontSize:18,padding:"0 4px"}}>→</div>
+            <div style={{flex:1,textAlign:"center",padding:"8px 6px",borderRadius:10,
+              background:phase===2?"rgba(234,179,8,0.3)":"rgba(255,255,255,0.07)",
+              border:phase===2?"1.5px solid #eab308":"1px solid rgba(255,255,255,0.1)"}}>
+              <div style={{fontSize:11,color:phase===2?"#fde68a":"#9ca3af",fontWeight:700}}>⛳ GIAI ĐOẠN 2</div>
+              <div style={{fontSize:12,color:"#fff",marginTop:2}}>Chip/Putt · {p2Used} gậy</div>
+            </div>
+          </div>
+
+          {/* Tee yards banner */}
+          <div style={{background:"rgba(255,255,255,0.08)",borderRadius:10,padding:"7px 12px",marginBottom:10}}>
+            <div style={{fontSize:10,color:"#9ca3af",marginBottom:4}}>📏 Yards hố này:</div>
+            <div style={{display:"flex",gap:5,flexWrap:"wrap"}}>
+              {TEES.map(tee=>{ const y=holeYardsForTee(curHole,tee.id); const isCur=tee.id===(curPlayer.tee||"white");
+                return y>0?<div key={tee.id} style={{display:"flex",alignItems:"center",gap:3,
+                  background:isCur?"rgba(255,255,255,0.2)":"rgba(255,255,255,0.06)",
+                  border:isCur?"1.5px solid rgba(255,255,255,0.5)":"1px solid rgba(255,255,255,0.1)",
+                  borderRadius:8,padding:"3px 9px"}}>
+                  <span style={{fontSize:11}}>{tee.emoji}</span>
+                  <span style={{fontSize:12,fontWeight:isCur?800:500}}>{y}y</span>
+                  {isCur&&<span style={{fontSize:10,color:"#86efac"}}> ← bạn</span>}
+                </div>:null; })}
+            </div>
+          </div>
+
+          {/* Phase 1: stroke progress + yard tracker */}
+          {phase===1 && <>
+            <div style={{background:"rgba(255,255,255,0.15)",borderRadius:99,height:8}}>
+              <div style={{width:`${progressP1}%`,height:8,borderRadius:99,background:progressP1>=100?"#ef4444":progressP1>=70?"#f59e0b":"#10b981",transition:"width 0.3s"}}/>
+            </div>
+            <div style={{display:"flex",justifyContent:"space-between",marginTop:4,fontSize:11,color:"#9ca3af"}}>
+              <span>Gậy P1: <b style={{color:"#fff"}}>{p1Used}</b> / {max}</span>
+              {p1Used>=max&&<span style={{color:"#fca5a5"}}>⚠️ Đã đủ số gậy tối đa</span>}
+            </div>
+            {totalY>0 && <div style={{marginTop:10,display:"flex",justifyContent:"space-around",background:"rgba(255,255,255,0.1)",borderRadius:12,padding:"10px 8px"}}>
+              <div style={{textAlign:"center"}}><div style={{fontSize:10,color:"#9ca3af"}}>TỔNG HỐ</div><div style={{fontSize:22,fontWeight:900}}>{totalY}<span style={{fontSize:11}}>y</span></div></div>
+              <div style={{width:1,background:"rgba(255,255,255,0.2)"}}/>
+              <div style={{textAlign:"center"}}><div style={{fontSize:10,color:"#9ca3af"}}>ĐÃ ĐI</div><div style={{fontSize:22,fontWeight:900,color:"#86efac"}}>{ps.p1shots.reduce((s,sh)=>s+(sh.yardsMeasured||0),0)}<span style={{fontSize:11}}>y</span></div></div>
+              <div style={{width:1,background:"rgba(255,255,255,0.2)"}}/>
+              <div style={{textAlign:"center"}}><div style={{fontSize:10,color:"#9ca3af"}}>CÒN LẠI</div>
+                <div style={{fontSize:26,fontWeight:900,color:rem<=50?"#fca5a5":rem<=100?"#fde68a":"#6ee7b7"}}>{rem}<span style={{fontSize:11}}>y</span></div>
+                {rem<=50&&<div style={{fontSize:10,color:"#fca5a5"}}>→ chuyển P2</div>}
+              </div>
+            </div>}
+          </>}
+
+          {/* Phase 2: P1 completion summary */}
+          {phase===2 && <div style={{background:"rgba(16,185,129,0.15)",border:"1px solid rgba(16,185,129,0.4)",borderRadius:10,padding:"8px 14px"}}>
+            <div style={{fontSize:12,color:"#6ee7b7",fontWeight:700,marginBottom:4}}>✅ Giai đoạn 1 hoàn thành — {p1Used} gậy</div>
+            <div style={{fontSize:13,color:"#d1fae5"}}>
+              {ps.enteredP2At50?"Còn ≤ 50y → chuyển chip/putt":"Đã đủ số gậy tối đa → về 50 yard"}
+            </div>
+          </div>}
+        </div>
+
+        {/* SHOT LOG P1 */}
+        {ps.p1shots.length>0&&(
+          <div style={{background:"#fff",borderRadius:12,padding:14,marginBottom:12,border:"1.5px solid #e5e7eb"}}>
+            <div style={{fontWeight:700,color:"#374151",marginBottom:8,fontSize:13}}>📡 Giai đoạn 1 — Máy ảo ({p1Used} gậy):</div>
+            {ps.p1shots.map((s,i)=>{
+              const ay=yardsAfterShotP1(i);
+              return(<div key={i} style={{display:"flex",justifyContent:"space-between",alignItems:"center",
+                padding:"6px 10px",background:i%2===0?"#f9fafb":"#fff",borderRadius:6,fontSize:13}}>
+                <span style={{fontWeight:600}}>Gậy {i+1}: <b style={{color:"#1d4ed8"}}>{s.club}</b></span>
+                <div style={{display:"flex",gap:8,alignItems:"center"}}>
+                  {s.yardsMeasured>0&&<span style={{color:"#16a34a",fontSize:12,fontWeight:600}}>−{s.yardsMeasured}y</span>}
+                  {ay!==null&&<span style={{fontWeight:700,fontSize:12,color:ay<=50?"#ef4444":ay<=100?"#f59e0b":"#374151",
+                    background:ay<=50?"#fef2f2":ay<=100?"#fefce8":"#f3f4f6",borderRadius:6,padding:"2px 7px"}}>📍{ay}y</span>}
+                </div>
+              </div>);
+            })}
+          </div>
+        )}
+
+        {/* SHOT LOG P2 */}
+        {ps.p2shots.length>0&&(
+          <div style={{background:"#fff",borderRadius:12,padding:14,marginBottom:12,border:"1.5px solid #fde68a"}}>
+            <div style={{fontWeight:700,color:"#92400e",marginBottom:8,fontSize:13}}>⛳ Giai đoạn 2 — Chip/Putt ({p2Used} gậy):</div>
+            {ps.p2shots.map((s,i)=>(
+              <div key={i} style={{display:"flex",padding:"6px 10px",background:i%2===0?"#fffbeb":"#fff",borderRadius:6,fontSize:13}}>
+                <span style={{fontWeight:600}}>Gậy {i+1}: <b style={{color:"#b45309"}}>{s.club}</b></span>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* INPUT P1 */}
+        {phase===1&&(
+          <div style={{background:"#fff",borderRadius:12,padding:18,marginBottom:14,border:"1.5px solid #bbf7d0"}}>
+            <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:12}}>
+              <span style={{background:"#dcfce7",color:"#15803d",fontWeight:800,borderRadius:8,padding:"4px 12px",fontSize:13}}>📡 GĐ1 · Gậy {p1Used+1}</span>
+              <span style={{fontSize:12,color:"#6b7280"}}>Max {max} gậy · dừng khi ≤ 50y</span>
+            </div>
+            <div style={{marginBottom:12}}>
+              <div style={{fontSize:12,color:"#6b7280",marginBottom:6}}>Chọn gậy:</div>
+              <div style={{display:"flex",flexWrap:"wrap",gap:5}}>
+                {CLUBS_P1.map(c=><button key={c} onClick={()=>setShotClub(c)} style={{padding:"6px 11px",borderRadius:8,fontSize:13,fontWeight:600,cursor:"pointer",
+                  border:shotClub===c?"2px solid #1f2937":"1.5px solid #d1d5db",background:shotClub===c?"#1f2937":"#fff",color:shotClub===c?"#fff":"#374151"}}>{c}</button>)}
+              </div>
+            </div>
+            <div style={{marginBottom:14,background:"#f0fdf4",borderRadius:10,padding:"10px 14px",border:"1px solid #86efac"}}>
+              <div style={{fontSize:12,fontWeight:700,color:"#15803d",marginBottom:5}}>📡 Máy đo: gậy này đi được bao nhiêu yard?</div>
+              {rem!==null&&<div style={{marginBottom:7}}>
+                <span style={{background:"#dcfce7",color:"#15803d",fontWeight:700,borderRadius:6,padding:"3px 10px",fontSize:13}}>
+                  Còn lại: {rem}y{rem<=50?" ⛳ sắp chuyển P2":""}
+                </span>
+              </div>}
+              <input type="number" value={shotYards} onChange={e=>setShotYards(e.target.value)}
+                placeholder="Nhập số yard" min={0} max={600}
+                style={{width:"100%",padding:"10px 14px",borderRadius:8,border:"1.5px solid #86efac",fontSize:16,boxSizing:"border-box",background:"#fff"}}/>
+            </div>
+            <div style={{display:"flex",gap:8}}>
+              <button onClick={recordShotP1} style={{flex:1,background:"#16a34a",color:"#fff",border:"none",borderRadius:10,padding:"12px 0",fontSize:15,fontWeight:700,cursor:"pointer"}}>✅ Ghi gậy P1</button>
+              <button onClick={undoShot} disabled={!ps.p1shots.length} style={{background:"#f3f4f6",color:"#374151",border:"1.5px solid #d1d5db",borderRadius:10,padding:"12px 16px",fontSize:15,fontWeight:600,cursor:"pointer"}}>↩</button>
+            </div>
+          </div>
+        )}
+
+        {/* INPUT P2 */}
+        {phase===2&&(
+          <div style={{background:"#fff",borderRadius:12,padding:18,marginBottom:14,border:"1.5px solid #fde68a"}}>
+            <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:12}}>
+              <span style={{background:"#fef9c3",color:"#92400e",fontWeight:800,borderRadius:8,padding:"4px 12px",fontSize:13}}>⛳ GĐ2 · Gậy {p2Used+1}</span>
+              <span style={{fontSize:12,color:"#6b7280"}}>Chip/Putt từ 50y · Không giới hạn</span>
+            </div>
+            <div style={{marginBottom:12}}>
+              <div style={{fontSize:12,color:"#6b7280",marginBottom:6}}>Chọn gậy:</div>
+              <div style={{display:"flex",flexWrap:"wrap",gap:5}}>
+                {CLUBS_P2.map(c=><button key={c} onClick={()=>setShotClub(c)} style={{padding:"6px 11px",borderRadius:8,fontSize:13,fontWeight:600,cursor:"pointer",
+                  border:shotClub===c?"2px solid #92400e":"1.5px solid #d1d5db",background:shotClub===c?"#92400e":"#fff",color:shotClub===c?"#fff":"#374151"}}>{c}</button>)}
+              </div>
+            </div>
+            <div style={{display:"flex",gap:8,marginBottom:10}}>
+              <button onClick={recordShotP2} style={{flex:1,background:"#d97706",color:"#fff",border:"none",borderRadius:10,padding:"12px 0",fontSize:15,fontWeight:700,cursor:"pointer"}}>⛳ Ghi gậy P2</button>
+              <button onClick={undoShot} style={{background:"#f3f4f6",color:"#374151",border:"1.5px solid #d1d5db",borderRadius:10,padding:"12px 16px",fontSize:15,fontWeight:600,cursor:"pointer"}}>↩</button>
+            </div>
+            <button onClick={finishP2} style={{width:"100%",background:"linear-gradient(135deg,#16a34a,#15803d)",color:"#fff",border:"none",borderRadius:10,padding:"13px 0",fontSize:15,fontWeight:700,cursor:"pointer"}}>
+              🏌️ Vào lỗ! (tổng {p1Used + p2Used} gậy)
+            </button>
+          </div>
+        )}
+
+        {/* NAVIGATION */}
+        <div style={{display:"flex",gap:10,marginBottom:18}}>
+          <button onClick={prevPlayer} style={{background:"#f3f4f6",color:"#374151",border:"1.5px solid #d1d5db",borderRadius:10,padding:"12px 18px",fontSize:15,fontWeight:600,cursor:"pointer"}}>← Quay lại</button>
+          <button onClick={nextPlayer} style={{flex:1,background:"linear-gradient(135deg,#1d4ed8,#2563eb)",color:"#fff",border:"none",borderRadius:10,padding:"12px 0",fontSize:16,fontWeight:700,cursor:"pointer"}}>
+            {currentPlayer===activePl.length-1&&currentHole===holes.length-1?"🏁 Kết thúc!":"Người/Hố tiếp →"}
+          </button>
+        </div>
+
+        {/* MINI SCORECARD */}
+        <div style={{background:"#fff",borderRadius:12,border:"1.5px solid #e5e7eb",overflow:"hidden"}}>
+          <div style={{background:"#1f2937",color:"#fff",padding:"10px 16px",fontWeight:700,fontSize:13}}>📊 Bảng điểm hiện tại</div>
+          <div style={{overflowX:"auto"}}>
+            <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+              <thead><tr style={{background:"#f9fafb"}}>
+                <th style={th}>Người</th><th style={th}>Tee</th>
+                {holes.map((h,i)=><th key={h.id} style={{...th,color:i===currentHole?"#16a34a":"#374151"}}>H{i+1}<br/><span style={{fontWeight:400,fontSize:10}}>P{h.par}</span></th>)}
+                <th style={th}>Tổng</th>
+              </tr></thead>
+              <tbody>{activePl.map(p=>{ let total=0; return(
+                <tr key={p.id} style={{background:p.id===curPlayer.id?TEAM_BG[p.team]:"#fff"}}>
+                  <td style={{...td,fontWeight:700}}><span style={{color:TEAM_COLORS[p.team]}}>●</span> {p.name}</td>
+                  <td style={td}><TeeBadge teeId={p.tee||"white"}/></td>
+                  {holes.map((h,i)=>{
+                    const s=h.strokes[p.id]; if(!s){return<td key={h.id} style={td}>—</td>;}
+                    const maxH=MAX_STROKES[h.par];
+                    const sc=(Math.min(s.p1shots?.length||0,maxH))+(s.p2shots?.length||0);
+                    if(sc>0)total+=sc;
+                    const ph=s.phase;
+                    return<td key={h.id} style={{...td,fontWeight:700,color:ph===1?"#9ca3af":ph===2?"#d97706":"#374151"}}>
+                      {sc||"—"}{ph===1&&sc>0?"*":""}{ph===2?"⛳":""}
+                    </td>;
+                  })}
+                  <td style={{...td,fontWeight:800}}>{total||"—"}</td>
+                </tr>); })}</tbody>
+            </table>
+          </div>
+          <div style={{padding:"5px 14px",fontSize:11,color:"#9ca3af"}}>* đang P1 · ⛳ đang P2</div>
+        </div>
+      </div>
+    );
+  };
+  const renderDone = () => {
+    const sess=sessions[0]; if(!sess)return null;
+    const{playerScores,teamScores}=calcSessionScores(sess);
+    return(
+      <div style={{maxWidth:740,margin:"0 auto"}}>
+        <div style={{textAlign:"center",marginBottom:24}}><div style={{fontSize:40}}>🏆</div>
+          <h2 style={{fontSize:26,fontWeight:900,color:"#1f2937"}}>Kết quả buổi {sess.date}</h2></div>
+        <div style={{display:"flex",gap:14,marginBottom:22,flexWrap:"wrap"}}>
+          {teamScores.map((t,i)=><TeamCard key={t.team} team={t.team} rank={i} netTotal={t.netTotal} grossTotal={t.grossTotal} members={t.members}/>)}
+        </div>
+        <div style={{background:"#fff",borderRadius:14,border:"1.5px solid #e5e7eb",overflow:"hidden",marginBottom:18}}>
+          <div style={{background:"#1f2937",color:"#fff",padding:"12px 18px",fontWeight:700,fontSize:15}}>👤 Điểm cá nhân</div>
+          <div style={{overflowX:"auto"}}>
+            <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
+              <thead><tr style={{background:"#f9fafb"}}>
+                <th style={th}>Hạng</th><th style={th}>Tên</th><th style={th}>Team</th><th style={th}>Tee</th>
+                <th style={th}>HCP</th><th style={th}>HCP trừ</th><th style={th}>Gross</th><th style={th}>Net</th>
+              </tr></thead>
+              <tbody>{[...playerScores].sort((a,b)=>a.net-b.net).map((p,i)=>(
+                <tr key={p.id} style={{background:i===0?"#fef9c3":i%2===0?"#f9fafb":"#fff"}}>
+                  <td style={td}>{["🥇","🥈","🥉"][i]||i+1}</td>
+                  <td style={{...td,fontWeight:700}}>{p.name}</td>
+                  <td style={td}><Badge color={p.team}>{p.team}</Badge></td>
+                  <td style={td}><TeeBadge teeId={p.tee||"white"}/></td>
+                  <td style={td}>{p.hcp}</td>
+                  <td style={{...td,color:"#16a34a"}}>−{p.hcpStrokes.toFixed(1)}</td>
+                  <td style={td}>{p.gross}</td>
+                  <td style={{...td,fontWeight:800,color:"#1d4ed8"}}>{p.net.toFixed(1)}</td>
+                </tr>
+              ))}</tbody>
+            </table>
+          </div>
+        </div>
+        <button onClick={()=>{setPhase("setup");setHoles([]);setCurrentHole(0);setCurrentPlayer(0);}} style={{
+          background:"linear-gradient(135deg,#16a34a,#15803d)",color:"#fff",border:"none",
+          borderRadius:12,padding:"14px 40px",fontSize:16,fontWeight:800,cursor:"pointer"}}>🔄 Buổi mới</button>
+      </div>
+    );
+  };
+
+  const renderHistory = () => {
+    const lb=calcLeaderboard();
+    return(
+      <div style={{maxWidth:740,margin:"0 auto"}}>
+        <h2 style={{fontSize:22,fontWeight:800,color:"#1f2937",marginBottom:18}}>📊 Leaderboard tích lũy</h2>
+        {lb.length===0&&<div style={{color:"#9ca3af",padding:20}}>Chưa có buổi nào được lưu.</div>}
+        {lb.length>0&&<div style={{background:"#fff",borderRadius:14,border:"1.5px solid #e5e7eb",overflow:"hidden",marginBottom:22}}>
+          <div style={{overflowX:"auto"}}>
+            <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
+              <thead><tr style={{background:"#1f2937",color:"#fff"}}>
+                <th style={th2}>Hạng</th><th style={th2}>Tên</th><th style={th2}>Team</th><th style={th2}>Tee</th>
+                <th style={th2}>Buổi</th><th style={th2}>Avg Gross</th><th style={th2}>Avg Net</th><th style={th2}>Tổng Net</th>
+              </tr></thead>
+              <tbody>{lb.map((p,i)=>(
+                <tr key={p.id} style={{background:i===0?"#fef9c3":i%2===0?"#f9fafb":"#fff"}}>
+                  <td style={td}>{["🥇","🥈","🥉"][i]||i+1}</td>
+                  <td style={{...td,fontWeight:700}}>{p.name}</td>
+                  <td style={td}><Badge color={p.team}>{p.team}</Badge></td>
+                  <td style={td}><TeeBadge teeId={p.tee||"white"}/></td>
+                  <td style={td}>{p.sessions}</td>
+                  <td style={td}>{(p.totalGross/p.sessions).toFixed(1)}</td>
+                  <td style={td}>{(p.totalNet/p.sessions).toFixed(1)}</td>
+                  <td style={{...td,fontWeight:800,color:"#1d4ed8"}}>{p.totalNet.toFixed(1)}</td>
+                </tr>
+              ))}</tbody>
+            </table>
+          </div>
+        </div>}
+        <h3 style={{fontSize:17,fontWeight:700,color:"#374151",marginBottom:12}}>📅 Lịch sử các buổi</h3>
+        {sessions.map(sess=>{
+          const{teamScores}=calcSessionScores(sess);
+          return(<div key={sess.id} style={{background:"#fff",borderRadius:12,border:"1.5px solid #e5e7eb",padding:"14px 18px",marginBottom:10,cursor:"pointer"}}
+            onClick={()=>setShowHistory(showHistory===sess.id?null:sess.id)}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+              <div>
+                <div style={{fontWeight:700,fontSize:15}}>📅 {sess.date}</div>
+                <div style={{fontSize:13,color:"#6b7280"}}>{sess.holes.length} hố · {sess.players.length} người</div>
+              </div>
+              <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+                {teamScores.map((t,i)=><div key={t.team} style={{textAlign:"center"}}>
+                  <Badge color={t.team}>{["🥇","🥈","🥉"][i]} {t.team}</Badge>
+                  <div style={{fontSize:11,color:"#9ca3af",marginTop:2}}>Net {t.netTotal.toFixed(1)}</div>
+                </div>)}
+              </div>
+            </div>
+            {showHistory===sess.id&&(()=>{ const{playerScores}=calcSessionScores(sess); return(
+              <div style={{marginTop:12,overflowX:"auto"}}>
+                <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
+                  <thead><tr style={{background:"#f9fafb"}}>
+                    <th style={th}>Tên</th><th style={th}>Tee</th><th style={th}>Gross</th><th style={th}>HCP trừ</th><th style={th}>Net</th>
+                  </tr></thead>
+                  <tbody>{[...playerScores].sort((a,b)=>a.net-b.net).map(p=>(
+                    <tr key={p.id}>
+                      <td style={{...td,fontWeight:700}}><span style={{color:TEAM_COLORS[p.team]}}>●</span> {p.name}</td>
+                      <td style={td}><TeeBadge teeId={p.tee||"white"}/></td>
+                      <td style={td}>{p.gross}</td>
+                      <td style={{...td,color:"#16a34a"}}>−{p.hcpStrokes.toFixed(1)}</td>
+                      <td style={{...td,fontWeight:800}}>{p.net.toFixed(1)}</td>
+                    </tr>
+                  ))}</tbody>
+                </table>
+              </div>
+            ); })()}
+          </div>);
+        })}
+      </div>
+    );
+  };
+
+  const navItems=[{id:"session",label:"🏌️ Đánh"},{id:"history",label:"📊 Lịch sử"},{id:"settings",label:"⚙️ Cài đặt"}];
+
+  return(
+    <div style={{fontFamily:"'Segoe UI',system-ui,sans-serif",background:"#f8fafc",minHeight:"100vh"}}>
+      <div style={{background:"linear-gradient(135deg,#1f2937,#111827)",color:"#fff",padding:"16px 24px",
+        display:"flex",alignItems:"center",justifyContent:"space-between",boxShadow:"0 4px 20px rgba(0,0,0,0.2)"}}>
+        <div><div style={{fontSize:22,fontWeight:900}}>⛳ Golf Scorecard</div>
+          <div style={{fontSize:12,color:"#9ca3af"}}>3 Teams · Handicap · Multi-Tee · localStorage</div></div>
+        <div style={{display:"flex",gap:5,flexWrap:"wrap"}}>
+          {TEES.map(t=><span key={t.id} style={{fontSize:11,padding:"2px 6px",background:"rgba(255,255,255,0.1)",borderRadius:4}}>{t.emoji}{t.label}</span>)}
+        </div>
+      </div>
+      <div style={{background:"#fff",borderBottom:"1.5px solid #e5e7eb",display:"flex"}}>
+        {navItems.map(n=><button key={n.id} onClick={()=>setTab(n.id)} style={{flex:1,padding:"13px 0",border:"none",
+          background:tab===n.id?"#f0fdf4":"#fff",color:tab===n.id?"#16a34a":"#6b7280",
+          fontWeight:tab===n.id?800:500,fontSize:14,cursor:"pointer",
+          borderBottom:tab===n.id?"3px solid #16a34a":"3px solid transparent"}}>{n.label}</button>)}
+      </div>
+      <div style={{padding:"24px 16px"}}>
+        {tab==="session"&&(phase==="setup"?renderSetup():phase==="playing"?renderPlaying():renderDone())}
+        {tab==="history"&&renderHistory()}
+        {tab==="settings"&&<SettingsPanel players={players} setPlayers={newP=>{ setPlayers(newP); setActivePlayers(newP.map(p=>({...p,active:true}))); }}/>}
+      </div>
+    </div>
+  );
+}
+
+// ── SETTINGS PANEL ────────────────────────────────────────────────────────────
+function SettingsPanel({players,setPlayers}){
+  const [editIdx,setEditIdx]=useState(null);
+  const [ef,setEf]=useState({name:"",team:"Chavis",hcp:18,tee:"white"});
+  const [addMode,setAddMode]=useState(false);
+  const [nf,setNf]=useState({name:"",team:"Chavis",hcp:18,tee:"white"});
+  const [confirmDel,setConfirmDel]=useState(null);
+  const inp={padding:"7px 12px",borderRadius:8,border:"1.5px solid #d1d5db",fontSize:14};
+  const sel={...inp,background:"#fff",cursor:"pointer"};
+  const TeeSelect=({val,onChange})=><div style={{display:"flex",gap:5,flexWrap:"wrap"}}>
+    {TEES.map(t=><button key={t.id} onClick={()=>onChange(t.id)} style={{padding:"5px 10px",borderRadius:8,fontSize:13,fontWeight:600,cursor:"pointer",
+      border:val===t.id?`2px solid ${t.color}`:"1.5px solid #d1d5db",background:val===t.id?t.bg:"#fff",color:t.color}}>{t.emoji} {t.label}</button>)}
+  </div>;
+  return(
+    <div style={{maxWidth:740,margin:"0 auto"}}>
+      <h2 style={{fontSize:22,fontWeight:800,color:"#1f2937",marginBottom:6}}>⚙️ Quản lý thành viên</h2>
+      <p style={{fontSize:13,color:"#9ca3af",marginBottom:16}}>Thêm, sửa tên, đổi nhóm, HCP và Tee của từng người.</p>
+      <div style={{background:"#fff",borderRadius:14,border:"1.5px solid #e5e7eb",overflow:"hidden",marginBottom:16}}>
+        {players.map((p,i)=>(
+          <div key={p.id}>
+            {editIdx!==i&&<div style={{display:"flex",alignItems:"center",gap:10,padding:"12px 18px",flexWrap:"wrap",
+              borderBottom:i<players.length-1?"1px solid #f3f4f6":"none",background:confirmDel===i?"#fef2f2":"#fff"}}>
+              <div style={{fontWeight:700,fontSize:15,minWidth:80,color:TEAM_COLORS[p.team]||"#374151"}}>{p.name}</div>
+              <Badge color={p.team}>{p.team}</Badge>
+              <TeeBadge teeId={p.tee||"white"}/>
+              <span style={{fontSize:13,color:"#6b7280"}}>HCP {p.hcp}</span>
+              <div style={{marginLeft:"auto",display:"flex",gap:8,alignItems:"center"}}>
+                {confirmDel===i?<>
+                  <span style={{fontSize:13,color:"#ef4444",fontWeight:700}}>Xóa {p.name}?</span>
+                  <button onClick={()=>{setPlayers(players.filter((_,j)=>j!==i));setConfirmDel(null);}} style={{background:"#ef4444",color:"#fff",border:"none",borderRadius:8,padding:"5px 14px",fontWeight:700,cursor:"pointer",fontSize:13}}>✓</button>
+                  <button onClick={()=>setConfirmDel(null)} style={{background:"#f3f4f6",color:"#374151",border:"1.5px solid #d1d5db",borderRadius:8,padding:"5px 12px",fontWeight:600,cursor:"pointer",fontSize:13}}>Hủy</button>
+                </>:<>
+                  <button onClick={()=>{setEditIdx(i);setEf({name:p.name,team:p.team,hcp:p.hcp,tee:p.tee||"white"});setAddMode(false);}} style={{background:"#eff6ff",color:"#1d4ed8",border:"1.5px solid #bfdbfe",borderRadius:8,padding:"5px 14px",fontWeight:700,cursor:"pointer",fontSize:13}}>✏️ Sửa</button>
+                  <button onClick={()=>setConfirmDel(i)} style={{background:"#fff",color:"#ef4444",border:"1.5px solid #fca5a5",borderRadius:8,padding:"5px 14px",fontWeight:700,cursor:"pointer",fontSize:13}}>🗑</button>
+                </>}
+              </div>
+            </div>}
+            {editIdx===i&&<div style={{padding:"14px 18px",background:"#f0fdf4",borderLeft:"3px solid #16a34a",borderBottom:i<players.length-1?"1px solid #e5e7eb":"none"}}>
+              <div style={{fontSize:13,color:"#16a34a",fontWeight:700,marginBottom:10}}>✏️ Sửa: {p.name}</div>
+              <div style={{display:"flex",gap:10,flexWrap:"wrap",marginBottom:10}}>
+                <div><label style={{fontSize:12,color:"#6b7280",display:"block",marginBottom:4}}>Tên</label>
+                  <input value={ef.name} onChange={e=>setEf(f=>({...f,name:e.target.value}))} style={{...inp,width:120}}/></div>
+                <div><label style={{fontSize:12,color:"#6b7280",display:"block",marginBottom:4}}>Nhóm</label>
+                  <select value={ef.team} onChange={e=>setEf(f=>({...f,team:e.target.value}))} style={{...sel,width:100}}>{TEAMS.map(t=><option key={t}>{t}</option>)}</select></div>
+                <div><label style={{fontSize:12,color:"#6b7280",display:"block",marginBottom:4}}>HCP</label>
+                  <input type="number" value={ef.hcp} onChange={e=>setEf(f=>({...f,hcp:e.target.value}))} min={0} max={54} style={{...inp,width:60,textAlign:"center"}}/></div>
+              </div>
+              <div style={{marginBottom:10}}><label style={{fontSize:12,color:"#6b7280",display:"block",marginBottom:6}}>Tee:</label>
+                <TeeSelect val={ef.tee} onChange={v=>setEf(f=>({...f,tee:v}))}/></div>
+              <div style={{display:"flex",gap:8}}>
+                <button onClick={()=>{ if(!ef.name.trim())return alert("Tên không được trống!"); setPlayers(players.map((x,j)=>j===i?{...x,...ef,hcp:parseInt(ef.hcp)||0}:x)); setEditIdx(null); }} style={{background:"#16a34a",color:"#fff",border:"none",borderRadius:8,padding:"8px 18px",fontWeight:700,cursor:"pointer",fontSize:14}}>💾 Lưu</button>
+                <button onClick={()=>setEditIdx(null)} style={{background:"#f3f4f6",color:"#374151",border:"1.5px solid #d1d5db",borderRadius:8,padding:"8px 14px",fontWeight:600,cursor:"pointer",fontSize:14}}>Hủy</button>
+              </div>
+            </div>}
+          </div>
+        ))}
+      </div>
+      {!addMode?
+        <button onClick={()=>{setAddMode(true);setEditIdx(null);}} style={{background:"linear-gradient(135deg,#1d4ed8,#2563eb)",color:"#fff",border:"none",borderRadius:12,padding:"12px 28px",fontSize:15,fontWeight:700,cursor:"pointer",boxShadow:"0 4px 12px rgba(29,78,216,0.3)"}}>➕ Thêm thành viên</button>
+      :<div style={{background:"#fff",borderRadius:14,border:"2px solid #3b82f6",padding:20,marginBottom:16}}>
+        <div style={{fontSize:15,fontWeight:700,color:"#1d4ed8",marginBottom:14}}>➕ Thêm thành viên mới</div>
+        <div style={{display:"flex",gap:10,flexWrap:"wrap",marginBottom:12}}>
+          <div><label style={{fontSize:12,color:"#6b7280",display:"block",marginBottom:4}}>Tên *</label>
+            <input value={nf.name} onChange={e=>setNf(f=>({...f,name:e.target.value}))} placeholder="Nhập tên..." style={{...inp,width:130}}/></div>
+          <div><label style={{fontSize:12,color:"#6b7280",display:"block",marginBottom:4}}>Nhóm</label>
+            <select value={nf.team} onChange={e=>setNf(f=>({...f,team:e.target.value}))} style={{...sel,width:100}}>{TEAMS.map(t=><option key={t}>{t}</option>)}</select></div>
+          <div><label style={{fontSize:12,color:"#6b7280",display:"block",marginBottom:4}}>HCP</label>
+            <input type="number" value={nf.hcp} onChange={e=>setNf(f=>({...f,hcp:e.target.value}))} min={0} max={54} style={{...inp,width:60,textAlign:"center"}}/></div>
+        </div>
+        <div style={{marginBottom:12}}><label style={{fontSize:12,color:"#6b7280",display:"block",marginBottom:6}}>Tee:</label>
+          <div style={{display:"flex",gap:5,flexWrap:"wrap"}}>
+            {TEES.map(t=><button key={t.id} onClick={()=>setNf(f=>({...f,tee:t.id}))} style={{padding:"5px 10px",borderRadius:8,fontSize:13,fontWeight:600,cursor:"pointer",border:nf.tee===t.id?`2px solid ${t.color}`:"1.5px solid #d1d5db",background:nf.tee===t.id?t.bg:"#fff",color:t.color}}>{t.emoji} {t.label}</button>)}
+          </div></div>
+        <div style={{display:"flex",gap:8}}>
+          <button onClick={()=>{ if(!nf.name.trim())return alert("Tên không được trống!"); setPlayers([...players,{id:uid(),name:nf.name.trim(),team:nf.team,hcp:parseInt(nf.hcp)||0,tee:nf.tee}]); setNf({name:"",team:"Chavis",hcp:18,tee:"white"}); setAddMode(false); }} style={{background:"#16a34a",color:"#fff",border:"none",borderRadius:8,padding:"9px 20px",fontWeight:700,cursor:"pointer",fontSize:14}}>✓ Thêm</button>
+          <button onClick={()=>setAddMode(false)} style={{background:"#f3f4f6",color:"#374151",border:"1.5px solid #d1d5db",borderRadius:8,padding:"9px 14px",fontWeight:600,cursor:"pointer",fontSize:14}}>Hủy</button>
+        </div>
+      </div>}
+      <div style={{marginTop:20,background:"#fff",borderRadius:14,border:"1.5px solid #e5e7eb",padding:16}}>
+        <div style={{fontWeight:700,color:"#374151",marginBottom:10}}>📋 Tổng quan nhóm</div>
+        <div style={{display:"flex",gap:12,flexWrap:"wrap"}}>
+          {TEAMS.map(team=>{ const mems=players.filter(p=>p.team===team); return(
+            <div key={team} style={{background:TEAM_BG[team],border:`1.5px solid ${TEAM_COLORS[team]}`,borderRadius:10,padding:"10px 16px",minWidth:150}}>
+              <div style={{fontWeight:800,color:TEAM_COLORS[team],marginBottom:6}}>Team {team}</div>
+              {mems.map(p=><div key={p.id} style={{fontSize:13,color:"#374151",padding:"2px 0",display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
+                {p.name} <TeeBadge teeId={p.tee||"white"}/> <span style={{color:"#9ca3af",fontSize:11}}>HCP{p.hcp}</span>
+              </div>)}
+              {mems.length===0&&<div style={{fontSize:12,color:"#9ca3af"}}>Chưa có ai</div>}
+            </div>
+          ); })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
