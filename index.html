@@ -94,10 +94,11 @@ const th2={padding:"8px 10px",textAlign:"center",fontWeight:700,fontSize:12,colo
 const td={padding:"6px 8px",textAlign:"center",borderBottom:"1px solid #f3f4f6",fontSize:12};
 
 // Trạng thái của 1 ô (player × hole)
-const cellInfo=(ps)=>{
+// par được truyền vào để tính đúng giới hạn GĐ1; gậy phạt tính vào tổng
+const cellInfo=(ps,par)=>{
   if(!ps||(!ps.p1shots?.length&&ps.phase===1))
     return{label:"—",color:"#d1d5db",bg:"#f9fafb",border:"#e5e7eb",done:false};
-  const total=(ps.p1shots?.length||0)+(ps.p2shots?.length||0);
+  const total=par?calcHoleStrokes(ps,par):(ps.p1shots?.length||0)+(ps.p2shots?.length||0);
   if(ps.phase===3)
     return{label:`${total}`,color:"#16a34a",bg:"#f0fdf4",border:"#86efac",done:true};
   if(ps.phase===2)
@@ -106,9 +107,16 @@ const cellInfo=(ps)=>{
 };
 
 // ── SCORING ───────────────────────────────────────────────────────────────────
+// Gậy phạt TÍNH vào tổng điểm nhưng KHÔNG tính vào giới hạn tối đa GĐ1
+const countNonPenalty=(shots=[])=>shots.filter(s=>s.club!=="Penalty").length;
+const countPenalty   =(shots=[])=>shots.filter(s=>s.club==="Penalty").length;
 const calcHoleStrokes=(ps,par)=>{
   const max=MAX_STROKES[par];
-  return Math.min(ps.p1shots?.length||0,max)+(ps.p2shots?.length||0);
+  // GĐ1: gậy thực tối đa max, gậy phạt không giới hạn
+  const p1real=Math.min(countNonPenalty(ps.p1shots),max);
+  const p1pen =countPenalty(ps.p1shots);
+  const p2    =ps.p2shots?.length||0;
+  return p1real+p1pen+p2;
 };
 const calcSessionScores=(sess)=>{
   const numH=sess.holes.length;
@@ -197,12 +205,18 @@ function App(){
   };
 
   // ── PLAYING: mở / đóng ô edit ─────────────────────────────────────────────
+  // Tất cả người chơi đã xong GĐ1 của hố holeIdx chưa?
+  const allP1DoneForHole=(holeIdx)=>
+    activePl.every(p=>{const ps=holes[holeIdx]?.strokes[p.id];return ps&&ps.phase>=2;});
+
+  // Những người chưa xong GĐ1 của hố holeIdx
+  const waitingP1=(holeIdx)=>
+    activePl.filter(p=>{const ps=holes[holeIdx]?.strokes[p.id];return !ps||ps.phase<2;});
+
   const openCell=(pid,holeIdx)=>{
     const ps=holes[holeIdx]?.strokes[pid];
     if(ps?.phase===3){
-      // Đã xong → hỏi có muốn sửa không
       if(!window.confirm("Người này đã hoàn thành hố này. Mở lại để sửa?"))return;
-      // Reopen: quay về phase 2 nếu có p2shots, ngược lại phase 1
       const newPs={...ps,phase:ps.p2shots?.length>0?2:1};
       updatePs(pid,holeIdx,newPs);
     }
@@ -231,9 +245,9 @@ function App(){
     const newShots=[...editPs.p1shots,{club:shotClub,yardsMeasured:measured}];
     const totalY=holeYardsForTee(editHole,editPlayer.tee||"white");
     const usedY=newShots.reduce((s,sh)=>s+(sh.yardsMeasured||0),0);
-    const remaining=totalY?Math.max(0,totalY-usedY):null;
+    const remaining=totalY?(totalY-usedY):null; // có thể âm nếu vượt quá hố
     const hitYard  =remaining!==null&&remaining<=threshold;
-    const hitStroke=newShots.length>=max;
+    const hitStroke=countNonPenalty(newShots)>=max; // gậy phạt không tính vào giới hạn
     const moveToP2 =hitYard||hitStroke;
     updatePs(editing.pid,editing.holeIdx,{
       ...editPs,p1shots:newShots,phase:moveToP2?2:1,enteredP2At50:hitYard,
@@ -408,7 +422,7 @@ function App(){
                       </td>
                       {holes.map((h,hIdx)=>{
                         const ps=h.strokes[p.id];
-                        const ci=cellInfo(ps);
+                        const ci=cellInfo(ps,h.par);
                         const sc=ps?calcHoleStrokes(ps,h.par):0;
                         if(sc>0)total+=sc;
                         const isEditCell=editing&&editing.pid===p.id&&editing.holeIdx===hIdx;
@@ -451,12 +465,12 @@ function App(){
           const p2Used=editPs.p2shots.length;
           const playerPhase=editPs.phase;
           const usedY=editPs.p1shots.reduce((s,sh)=>s+(sh.yardsMeasured||0),0);
-          const rem=totalY?Math.max(0,totalY-usedY):null;
+          const rem=totalY?(totalY-usedY):null; // âm nếu vượt quá
 
           const yardsAfter=(idx)=>{
             if(!totalY)return null;
             let g=0;for(let k=0;k<=idx;k++)g+=(editPs.p1shots[k].yardsMeasured||0);
-            return Math.max(0,totalY-g);
+            return totalY-g; // âm nếu vượt quá
           };
 
           return(
@@ -484,7 +498,8 @@ function App(){
                     background:playerPhase===1?"#dcfce7":"#f9fafb",
                     border:playerPhase===1?"2px solid #16a34a":"1.5px solid #e5e7eb"}}>
                     <div style={{fontSize:11,fontWeight:700,color:playerPhase===1?"#15803d":"#9ca3af"}}>📡 GIAI ĐOẠN 1</div>
-                    <div style={{fontSize:13,fontWeight:800,color:"#374151"}}>{p1Used}/{max} gậy</div>
+                    <div style={{fontSize:13,fontWeight:800,color:"#374151"}}>{countNonPenalty(editPs.p1shots)}/{max} gậy</div>
+                    {countPenalty(editPs.p1shots)>0&&<div style={{fontSize:10,color:"#dc2626",fontWeight:700}}>+{countPenalty(editPs.p1shots)} phạt</div>}
                   </div>
                   <div style={{display:"flex",alignItems:"center",color:"#9ca3af",fontSize:16}}>→</div>
                   <div style={{flex:1,textAlign:"center",padding:"8px",borderRadius:10,
@@ -495,26 +510,34 @@ function App(){
                   </div>
                   {playerPhase===3&&<div style={{flex:1,textAlign:"center",padding:"8px",borderRadius:10,background:"#f0fdf4",border:"2px solid #16a34a"}}>
                     <div style={{fontSize:11,fontWeight:700,color:"#15803d"}}>✅ XONG</div>
-                    <div style={{fontSize:13,fontWeight:800,color:"#16a34a"}}>{p1Used+p2Used} gậy</div>
+                    <div style={{fontSize:13,fontWeight:800,color:"#16a34a"}}>{calcHoleStrokes(editPs,editHole.par)} gậy</div>
                   </div>}
                 </div>
 
                 {/* Yard tracker (P1) */}
-                {playerPhase===1&&totalY>0&&(
-                  <div style={{display:"flex",gap:0,marginBottom:12,borderRadius:10,overflow:"hidden",border:"1.5px solid #e5e7eb"}}>
-                    {[
-                      {label:"Tổng",val:`${totalY}y`,color:"#374151",bg:"#f9fafb"},
-                      {label:"Đã đi",val:`${usedY}y`,color:"#16a34a",bg:"#f0fdf4"},
-                      {label:"Còn lại",val:`${rem}y`,color:rem<=threshold?"#dc2626":rem<=threshold*2?"#d97706":"#374151",bg:rem<=threshold?"#fef2f2":rem<=threshold*2?"#fefce8":"#f9fafb"},
-                    ].map((x,i)=>(
-                      <div key={i} style={{flex:1,textAlign:"center",padding:"8px 4px",background:x.bg,borderLeft:i>0?"1px solid #e5e7eb":"none"}}>
-                        <div style={{fontSize:10,color:"#9ca3af",fontWeight:600}}>{x.label}</div>
-                        <div style={{fontSize:16,fontWeight:800,color:x.color}}>{x.val}</div>
-                        {x.label==="Còn lại"&&rem<=threshold&&<div style={{fontSize:9,color:"#dc2626",fontWeight:700}}>→ P2</div>}
+                {playerPhase===1&&totalY>0&&(()=>{
+                  const remColor=rem<0?"#7c3aed":rem<=threshold?"#dc2626":rem<=threshold*2?"#d97706":"#374151";
+                  const remBg   =rem<0?"#f5f3ff":rem<=threshold?"#fef2f2":rem<=threshold*2?"#fefce8":"#f9fafb";
+                  const remLabel=rem<0?`${rem}y ⚡`:`${rem}y`;
+                  const remNote =rem<0?"Vượt quá!":rem<=threshold?"→ P2":null;
+                  return(
+                    <div style={{display:"flex",gap:0,marginBottom:12,borderRadius:10,overflow:"hidden",border:"1.5px solid #e5e7eb"}}>
+                      <div style={{flex:1,textAlign:"center",padding:"8px 4px",background:"#f9fafb"}}>
+                        <div style={{fontSize:10,color:"#9ca3af",fontWeight:600}}>Tổng hố</div>
+                        <div style={{fontSize:16,fontWeight:800,color:"#374151"}}>{totalY}y</div>
                       </div>
-                    ))}
-                  </div>
-                )}
+                      <div style={{flex:1,textAlign:"center",padding:"8px 4px",background:"#f0fdf4",borderLeft:"1px solid #e5e7eb"}}>
+                        <div style={{fontSize:10,color:"#9ca3af",fontWeight:600}}>Đã đi</div>
+                        <div style={{fontSize:16,fontWeight:800,color:"#16a34a"}}>{usedY}y</div>
+                      </div>
+                      <div style={{flex:1,textAlign:"center",padding:"8px 4px",background:remBg,borderLeft:"1px solid #e5e7eb"}}>
+                        <div style={{fontSize:10,color:"#9ca3af",fontWeight:600}}>Còn lại</div>
+                        <div style={{fontSize:16,fontWeight:800,color:remColor}}>{remLabel}</div>
+                        {remNote&&<div style={{fontSize:9,color:remColor,fontWeight:700}}>{remNote}</div>}
+                      </div>
+                    </div>
+                  );
+                })()}
 
                 {/* P2 summary banner */}
                 {playerPhase===2&&(
@@ -526,15 +549,20 @@ function App(){
                 {/* Shot log P1 */}
                 {p1Used>0&&(
                   <div style={{marginBottom:10,background:"#f9fafb",borderRadius:8,padding:"8px 10px",border:"1px solid #e5e7eb"}}>
-                    <div style={{fontSize:11,fontWeight:700,color:"#6b7280",marginBottom:5}}>📡 P1:</div>
+                    <div style={{fontSize:11,fontWeight:700,color:"#6b7280",marginBottom:5}}>
+                      📡 P1: {countNonPenalty(editPs.p1shots)}/{max} gậy{countPenalty(editPs.p1shots)>0?` + ${countPenalty(editPs.p1shots)} phạt`:""}
+                    </div>
                     <div style={{display:"flex",flexWrap:"wrap",gap:4}}>
                       {editPs.p1shots.map((s,i)=>{
                         const ay=yardsAfter(i);
+                        const isPenalty=s.club==="Penalty";
                         return(
-                          <div key={i} style={{background:"#fff",border:"1px solid #e5e7eb",borderRadius:6,padding:"3px 8px",fontSize:11,display:"flex",gap:5}}>
-                            <b style={{color:"#1d4ed8"}}>{s.club}</b>
+                          <div key={i} style={{background:isPenalty?"#fef2f2":"#fff",border:`1px solid ${isPenalty?"#fca5a5":"#e5e7eb"}`,borderRadius:6,padding:"3px 8px",fontSize:11,display:"flex",gap:5}}>
+                            <b style={{color:isPenalty?"#dc2626":"#1d4ed8"}}>{s.club}</b>
                             {s.yardsMeasured>0&&<span style={{color:"#16a34a"}}>−{s.yardsMeasured}y</span>}
-                            {ay!==null&&<span style={{color:ay<=threshold?"#ef4444":"#9ca3af"}}>→{ay}y</span>}
+                            {ay!==null&&!isPenalty&&<span style={{color:ay<0?"#7c3aed":ay<=threshold?"#ef4444":"#9ca3af"}}>
+                              →{ay}y{ay<0?" ⚡":""}
+                            </span>}
                           </div>
                         );
                       })}
@@ -583,35 +611,77 @@ function App(){
                 )}
 
                 {/* INPUT P2 */}
-                {playerPhase===2&&(
-                  <>
-                    <div style={{fontSize:12,color:"#6b7280",marginBottom:6,fontWeight:600}}>⛳ Gậy {p2Used+1} (Chip/Putt) — Chọn gậy:</div>
-                    <div style={{display:"flex",flexWrap:"wrap",gap:5,marginBottom:10}}>
-                      {CLUBS_P2.map(c=>(
-                        <button key={c} onClick={()=>setShotClub(c)} style={{padding:"7px 12px",borderRadius:7,fontSize:13,fontWeight:600,cursor:"pointer",
-                          border:shotClub===c?"2px solid #92400e":"1.5px solid #d1d5db",
-                          background:shotClub===c?"#92400e":"#fff",color:shotClub===c?"#fff":"#374151"}}>{c}</button>
-                      ))}
+                {playerPhase===2&&(()=>{
+                  const waiting=waitingP1(editing.holeIdx);
+                  const canP2=waiting.length===0;
+                  if(!canP2) return(
+                    <div style={{background:"#fef3c7",border:"2px solid #f59e0b",borderRadius:10,padding:"14px 16px"}}>
+                      <div style={{fontWeight:800,color:"#92400e",fontSize:14,marginBottom:6}}>⏳ Chờ Giai đoạn 1 hoàn tất</div>
+                      <div style={{fontSize:13,color:"#78350f",marginBottom:8}}>
+                        Những người chưa xong GĐ1 hố này:
+                      </div>
+                      <div style={{display:"flex",flexWrap:"wrap",gap:6}}>
+                        {waiting.map(p=>{
+                          const wps=holes[editing.holeIdx]?.strokes[p.id];
+                          const wUsed=wps?.p1shots?.length||0;
+                          const wMax=MAX_STROKES[editHole.par];
+                          return(
+                            <div key={p.id} style={{background:"#fff",border:"1.5px solid #f59e0b",borderRadius:8,padding:"5px 10px",fontSize:12}}>
+                              <b style={{color:TEAM_COLORS[p.team]||"#374151"}}>{p.name}</b>
+                              <span style={{color:"#9ca3af",marginLeft:6}}>{wUsed}/{wMax} gậy P1</span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                      <div style={{marginTop:10,fontSize:11,color:"#92400e"}}>
+                        Tất cả phải xong Giai đoạn 1 trước khi ra sân cỏ chip/putt.
+                      </div>
                     </div>
-                    <div style={{display:"flex",gap:8,marginBottom:10}}>
-                      <button onClick={recordShotP2} style={{flex:1,background:"#d97706",color:"#fff",border:"none",borderRadius:9,padding:"11px 0",fontSize:14,fontWeight:700,cursor:"pointer"}}>⛳ Ghi gậy P2</button>
-                      <button onClick={undoShot} style={{background:"#f3f4f6",color:"#374151",border:"1.5px solid #d1d5db",borderRadius:9,padding:"11px 14px",fontSize:14,fontWeight:600,cursor:"pointer"}}>↩</button>
-                    </div>
-                    <button onClick={finishP2} style={{width:"100%",background:"linear-gradient(135deg,#16a34a,#15803d)",color:"#fff",border:"none",borderRadius:9,padding:"12px 0",fontSize:14,fontWeight:700,cursor:"pointer"}}>
-                      🏌️ Vào lỗ! — Tổng {p1Used+p2Used} gậy
-                    </button>
-                  </>
-                )}
+                  );
+                  return(
+                    <>
+                      <div style={{fontSize:12,color:"#6b7280",marginBottom:6,fontWeight:600}}>⛳ Gậy {p2Used+1} (Chip/Putt) — Chọn gậy:</div>
+                      <div style={{display:"flex",flexWrap:"wrap",gap:5,marginBottom:10}}>
+                        {CLUBS_P2.map(c=>(
+                          <button key={c} onClick={()=>setShotClub(c)} style={{padding:"7px 12px",borderRadius:7,fontSize:13,fontWeight:600,cursor:"pointer",
+                            border:shotClub===c?"2px solid #92400e":"1.5px solid #d1d5db",
+                            background:shotClub===c?"#92400e":"#fff",color:shotClub===c?"#fff":"#374151"}}>{c}</button>
+                        ))}
+                      </div>
+                      <div style={{display:"flex",gap:8,marginBottom:10}}>
+                        <button onClick={recordShotP2} style={{flex:1,background:"#d97706",color:"#fff",border:"none",borderRadius:9,padding:"11px 0",fontSize:14,fontWeight:700,cursor:"pointer"}}>⛳ Ghi gậy P2</button>
+                        <button onClick={undoShot} style={{background:"#f3f4f6",color:"#374151",border:"1.5px solid #d1d5db",borderRadius:9,padding:"11px 14px",fontSize:14,fontWeight:600,cursor:"pointer"}}>↩</button>
+                      </div>
+                      <button onClick={finishP2} style={{width:"100%",background:"linear-gradient(135deg,#16a34a,#15803d)",color:"#fff",border:"none",borderRadius:9,padding:"12px 0",fontSize:14,fontWeight:700,cursor:"pointer"}}>
+                        🏌️ Vào lỗ! — Tổng {calcHoleStrokes({...editPs,p2shots:[...editPs.p2shots]},editHole.par)} gậy
+                      </button>
+                    </>
+                  );
+                })()}
 
                 {/* Đã xong */}
-                {playerPhase===3&&(
-                  <div style={{display:"flex",gap:8,alignItems:"center",justifyContent:"space-between"}}>
-                    <div style={{fontSize:14,fontWeight:700,color:"#15803d"}}>
-                      ✅ Xong: {p1Used} (P1) + {p2Used} (P2) = <b style={{fontSize:18}}>{p1Used+p2Used}</b> gậy
+                {playerPhase===3&&(()=>{
+                  const total=calcHoleStrokes(editPs,editHole.par);
+                  const max=MAX_STROKES[editHole.par];
+                  const p1real=Math.min(countNonPenalty(editPs.p1shots),max);
+                  const p1pen=countPenalty(editPs.p1shots);
+                  const p2=editPs.p2shots.length;
+                  return(
+                    <div style={{background:"#f0fdf4",borderRadius:10,padding:"10px 14px",border:"1.5px solid #86efac"}}>
+                      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                        <div>
+                          <div style={{fontSize:14,fontWeight:800,color:"#15803d"}}>
+                            ✅ Tổng: <b style={{fontSize:20}}>{total}</b> gậy
+                          </div>
+                          <div style={{fontSize:11,color:"#6b7280",marginTop:2}}>
+                            P1: {p1real} gậy{p1pen>0?<span style={{color:"#dc2626"}}> + {p1pen} phạt</span>:""} · P2: {p2} gậy
+                          </div>
+                        </div>
+                        <button onClick={undoShot} style={{background:"#fff",color:"#374151",border:"1.5px solid #d1d5db",borderRadius:8,padding:"6px 14px",cursor:"pointer",fontSize:12,fontWeight:600}}>↩ Sửa</button>
+                      </div>
                     </div>
-                    <button onClick={undoShot} style={{background:"#fff",color:"#374151",border:"1.5px solid #d1d5db",borderRadius:8,padding:"6px 14px",cursor:"pointer",fontSize:12,fontWeight:600}}>↩ Sửa</button>
-                  </div>
-                )}
+                  );
+                })()}
               </div>
             </div>
           );
